@@ -1,5 +1,99 @@
-# SAM template for LoonSign Docs
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SAM template for LoonSign Docs
 
-# Define the Lambda functions and API Gateway routes here
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 128
+    Environment:
+      Variables:
+        TABLE_NAME: Envelopes
 
-# Placeholder for actual content
+Resources:
+  CreateEnvelopeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: createEnvelope.handler
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Events:
+        CreateEnvelopeApi:
+          Type: Api
+          Properties:
+            Path: /envelopes
+            Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  SendEnvelopeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: sendEnvelope.handler
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Events:
+        SendEnvelopeApi:
+          Type: Api
+          Properties:
+            Path: /envelopes/{id}/send
+            Method: post
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  GetEnvelopeStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: getEnvelopeStatus.handler
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Events:
+        GetEnvelopeStatusApi:
+          Type: Api
+          Properties:
+            Path: /envelopes/{id}
+            Method: get
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  GetSignerUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: getSignerUrl.handler
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Events:
+        GetSignerUrlApi:
+          Type: Api
+          Properties:
+            Path: /sign/{token}
+            Method: get
+
+  StripeHookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: stripeHook.handler
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Events:
+        StripeHookApi:
+          Type: Api
+          Properties:
+            Path: /stripeHook
+            Method: post
+
+  CognitoAuthorizer:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: CognitoAuthorizer
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !ImportValue CognitoUserPoolArn
+
+Outputs:
+  CreateEnvelopeFunction:
+    Description: "API Gateway endpoint URL for Create Envelope function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/envelopes"
