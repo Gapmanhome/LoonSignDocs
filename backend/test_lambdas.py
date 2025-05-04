@@ -4,13 +4,9 @@ def test_createEnvelope():
     # Placeholder test for createEnvelope    
     assert True
 
-
-
-
-
 def test_sendEnvelope():
-    # Placeholder test for sendEnvelope
-    assert True
+  Placeholder test for sendEnvelope
+   assert True
 
 
 
