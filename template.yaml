@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LoonSign - Canadian E-Signature Service
+
+# Global values that are applied to all resources
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.12
+    MemorySize: 256
+    Environment:
+      Variables:
+        REGION: !Ref AWS::Region
+        DYNAMODB_TABLE_USERS: !Ref UsersTable
+        DYNAMODB_TABLE_DOCUMENTS: !Ref DocumentsTable
+        S3_BUCKET_DOCUMENTS: !Ref DocumentsBucket
+        DOCUSEAL_API_KEY: '{{resolve:secretsmanager:LoonSignSecrets:SecretString:DOCUSEAL_API_KEY}}'
+        STRIPE_SECRET_KEY: '{{resolve:secretsmanager:LoonSignSecrets:SecretString:STRIPE_SECRET_KEY}}'
+        JWT_SECRET: '{{resolve:secretsmanager:LoonSignSecrets:SecretString:JWT_SECRET}}'
+        STRIPE_PRICE_ID_PROFESSIONAL: '{{resolve:secretsmanager:LoonSignSecrets:SecretString:STRIPE_PRICE_ID_PROFESSIONAL}}'
+        STRIPE_PRICE_ID_BUSINESS: '{{resolve:secretsmanager:LoonSignSecrets:SecretString:STRIPE_PRICE_ID_BUSINESS}}'
+
+Resources:
+  # API Gateway
+  LoonSignApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+      Auth:
+        DefaultAuthorizer: LoonSignAuthorizer
+        Authorizers:
+          LoonSignAuthorizer:
+            FunctionArn: !GetAtt AuthorizerFunction.Arn
+        AddDefaultAuthorizerToCorsPreflight: false
+
+  # DynamoDB Tables
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: LoonSign-Users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: EmailIndex
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  DocumentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: LoonSign-Documents
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UserIdIndex
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  # S3 Bucket for document storage
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub loonsign-documents-${AWS::AccountId}
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteTempFiles
+            Status: Enabled
+            Prefix: temp/
+            ExpirationInDays: 1
+
+  # IAM Role for Lambda functions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LoonSignLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt DocumentsTable.Arn
+                  - !Sub ${UsersTable.Arn}/index/*
+                  - !Sub ${DocumentsTable.Arn}/index/*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub ${DocumentsBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+
+  # Lambda Functions - Authentication
+  LoginFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/auth/
+      Handler: login.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/auth/login
+            Method: post
+            Auth:
+              Authorizer: NONE
+
+  RegisterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/auth/
+      Handler: register.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/auth/register
+            Method: post
+            Auth:
+              Authorizer: NONE
+
+  GetCurrentUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/auth/
+      Handler: get_current_user.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/auth/me
+            Method: get
+
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/auth/
+      Handler: authorizer.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  # Lambda Functions - Documents
+  UploadDocumentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/documents/
+      Handler: upload.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/documents/upload
+            Method: post
+
+  ListDocumentsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/documents/
+      Handler: list.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/documents
+            Method: get
+
+  GetDocumentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/documents/
+      Handler: get.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/documents/{id}
+            Method: get
+
+  UpdateDocumentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/documents/
+      Handler: update.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/documents/{id}
+            Method: put
+
+  DeleteDocumentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/documents/
+      Handler: delete.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/documents/{id}
+            Method: delete
+
+  SendForSignatureFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/documents/
+      Handler: send_for_signature.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/documents/{id}/send
+            Method: post
+
+  GetDocumentStatisticsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/documents/
+      Handler: statistics.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/documents/statistics
+            Method: get
+
+  GetRecentDocumentsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/documents/
+      Handler: recent.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/documents/recent
+            Method: get
+
+  # Lambda Functions - Subscriptions
+  CreateSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/subscriptions/
+      Handler: create_subscription.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/subscriptions/create
+            Method: post
+
+  ManageSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/subscriptions/
+      Handler: manage_subscription.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/subscriptions/manage
+            Method: post
+
+  # Lambda Functions - Stripe Webhook
+  StripeWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/functions/subscriptions/
+      Handler: webhook.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoonSignApi
+            Path: /api/webhooks/stripe
+            Method: post
+            Auth:
+              Authorizer: NONE
+
+Outputs:
+  LoonSignApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${LoonSignApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+  
+  DocumentsBucketName:
+    Description: "S3 bucket for document storage"
+    Value: !Ref DocumentsBucket
+  
+  UsersTableName:
+    Description: "DynamoDB table for user data"
+    Value: !Ref UsersTable
+  
+  DocumentsTableName:
+    Description: "DynamoDB table for document data"
+    Value: !Ref DocumentsTable
