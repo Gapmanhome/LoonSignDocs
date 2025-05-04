@@ -1,6 +1,6 @@
 
 
-def test_createEnvelope():elope():
+def test_createEnvelope():elope():Update test_Lambdas.py to correct potential syntax errors
     # Placeholder test for createEnvelope    
     assert True
 
@@ -20,4 +20,8 @@ def test_getSignerUrl():
 
 def test_stripeHook():
     # Placeholder test for stripeHook
+    assert True
+
+def test_newFunction():
+    # Placeholder for new test function
     assert True
