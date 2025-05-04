@@ -1,3 +1,4 @@
-def handler(event, context):
+d
+ef handler(event, context):
     # Placeholder function for createEnvelope
     return {"statusCode": 200, "body": "Envelope created"}
