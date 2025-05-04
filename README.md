@@ -21,6 +21,7 @@ LoonSign Docs is a private-alpha Canadian e-signature service that allows users 
 - CI/CD: GitHub Actions → sandbox AWS account
 - Domain: `app.loonsigndocs.ca` (CloudFront + ACM)
 
+![High-Level Diagram](path/to/diagram.png)
 ## Getting Started
 
 To get started with LoonSign Docs, follow the instructions in the [runbook](docs/runbook.md).
